@@ -130,7 +130,7 @@ def dual(args):
             tgt_sents_forA = [['<s>'] + sent + ['</s>'] for sent in tgt_sentsA]
 
             src_sents_varA, masksA = to_input_variable(src_sentsA, vocabs['A'].src, cuda=args.cuda)
-            print(src_sents_varA.shape==masksA.shape)
+            # print(src_sents_varA.shape==masksA.shape)
             tgt_sents_varA, _ = to_input_variable(tgt_sents_forA, vocabs['A'].tgt, cuda=args.cuda)
             src_scores_varA = Variable(torch.FloatTensor(src_scoresA), requires_grad=False)
 
@@ -194,11 +194,11 @@ def dual(args):
 
             optimizerA.zero_grad()
             lossA.backward(retain_graph=True)
-            grad_normA = torch.nn.utils.clip_grad_norm(models['A'].parameters(), args.clip_grad)
+            grad_normA = torch.nn.utils.clip_grad_norm_(models['A'].parameters(), args.clip_grad)
             optimizerA.step()
             optimizerB.zero_grad()
             lossB.backward()
-            grad_normB = torch.nn.utils.clip_grad_norm(models['B'].parameters(), args.clip_grad)
+            grad_normB = torch.nn.utils.clip_grad_norm_(models['B'].parameters(), args.clip_grad)
             optimizerB.step()
             if t % args.log_n_iter == 0 and t != 0:
                 print('epoch %d, avg. loss A %.3f, avg. word loss A %.3f, avg, loss B %.3f, avg. word loss B %.3f, avg att loss %.3f' % (epoch,

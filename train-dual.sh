@@ -10,8 +10,8 @@ srcB=$srcdir/train.token.nl
 valA=$srcdir/valid.token.code
 valB=$srcdir/valid.token.nl
 
-saveA="dual_models/c2nl/"
-saveB="dual_models/nl2c/"
+saveA="dual_models/c2nl"
+saveB="dual_models/nl2c"
 python dsl_dual.py \
     --nmt $nmtA $nmtB \
     --src $srcA $srcB \
