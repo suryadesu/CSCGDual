@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import os
-
+import numpy as np
 import data
 import model
 
@@ -107,10 +107,15 @@ criterion = nn.CrossEntropyLoss()
 
 def repackage_hidden(h):
     """Wraps hidden states in new Variables, to detach them from their history."""
-    if type(h) == Variable:
+    if len(h.shape) <= 1 or h.shape[0] <= 1:
         return Variable(h.data)
     else:
-        return tuple(repackage_hidden(v) for v in h)
+        # print(h)
+        temp = []
+        for v in h:
+            temp.append(repackage_hidden(v))
+
+        return torch.stack(temp)
 
 
 # get_batch subdivides the source data into chunks of length args.bptt.
@@ -142,7 +147,8 @@ def evaluate(data_source):
         output_flat = output.view(-1, ntokens)
         total_loss += len(data) * criterion(output_flat, targets).data
         hidden = repackage_hidden(hidden)
-    return total_loss[0] / len(data_source)
+    print("reached")
+    return total_loss.item() / len(data_source)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -159,22 +165,24 @@ def train():
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         hidden = repackage_hidden(hidden)
         model.zero_grad()
+        # print(hidden)
+        # hidden = torch.stack(hidden)
         output, hidden = model(data, hidden)
         loss = criterion(output.view(-1, ntokens), targets)
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         # for p in model.parameters():
         #     p.data.add_(-lr, p.grad.data)
-        
+
         optimizer.step()
-        
+
 
         total_loss += loss.data
 
         if batch % args.log_interval == 0 and batch > 0:
-            cur_loss = total_loss[0] / args.log_interval
+            cur_loss = total_loss.item() / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:01.8f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | ppl {:8.2f}'.format(
@@ -190,7 +198,7 @@ best_val_loss = None
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     for epoch in range(1, args.epochs+1):
-        break
+        # break
         epoch_start_time = time.time()
         train()
         val_loss = evaluate(val_data)

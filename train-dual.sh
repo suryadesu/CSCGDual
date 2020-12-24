@@ -1,7 +1,7 @@
 #!/bin/bash
 
-nmtdir=pretrain_models/
-srcdir=data/py/
+nmtdir=pretrain_models/java/
+srcdir=data/java-small/
 
 nmtA=$nmtdir/c2nl.bin
 nmtB=$nmtdir/nl2c.bin

@@ -1,18 +1,19 @@
 
-from lm import LMProb
+from lm.lm_prob import LMProb
 from multiprocessing import Pool
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-
-lms = ['language_models/java/code.pt','language_models/java/nl.pt']
-read_file_paths = ['data/java/train.token.code', 'data/java/train.token.nl']
-dicts = ['language_models/java/dict_code.pkl', 'language_models/java/dict_nl.pkl']
-write_file_paths = ['data/java/train.token.code.score', 'data/java/train.token.nl.score']
+import lm.model
+lms = ['language_models/model.pt','language_models/modelNL.pt']
+read_file_paths = ['data/java-small/train.token.code', 'data/java-small/train.token.nl']
+dicts = ['data/java-small/dict_code.pkl', 'data/java-small/dict_nl.pkl']
+write_file_paths = ['data/java-small/train.token.code.score', 'data/java-small/train.token.nl.score']
 def get_score(line, num):
     sent = line.strip().split(' ')
     lm_score = lm_model.get_prob(sent)
     return (num, lm_score)
 
 for i in range(2):
+    print(lms[i])
     lm_model = LMProb(lms[i], dicts[i])
     fw = open(write_file_paths[i], 'w')
     f = open(read_file_paths[i])

@@ -16,6 +16,8 @@ from lm import model
 
 def loss_att(a, b, mask, length):
     epsilon = 1e-8
+    #print(mask.shape)
+    #print(a.data.shape)
     a.data.masked_fill_(mask, -(1e+8))
     b.data.masked_fill_(mask, -(1e+8))
     a = F.softmax(a, 2) + epsilon
@@ -67,7 +69,7 @@ def dual(args):
     dev_data_src2 = read_corpus(args.val[1], source='src')
     dev_data_tgt2 = read_corpus(args.val[0], source='tgt')
     dev_data['B'] = list(zip(dev_data_src2, dev_data_tgt2))
-    
+
     models = {}
     optimizers = {}
     nll_loss = {}
@@ -120,22 +122,25 @@ def dual(args):
 
         data = {}
         data['A'] = data_iter_for_dual(train_data, batch_size=args.batch_size, shuffle = False)
-        
+
         for batchA in data['A']:
+            models['A'].train()
+            models['B'].train()
             src_sentsA, tgt_sentsA, src_scoresA, src_scoresB = batchA[0], batchA[1], batchA[2], batchA[3]
             tgt_sents_forA = [['<s>'] + sent + ['</s>'] for sent in tgt_sentsA]
 
             src_sents_varA, masksA = to_input_variable(src_sentsA, vocabs['A'].src, cuda=args.cuda)
+            print(src_sents_varA.shape==masksA.shape)
             tgt_sents_varA, _ = to_input_variable(tgt_sents_forA, vocabs['A'].tgt, cuda=args.cuda)
             src_scores_varA = Variable(torch.FloatTensor(src_scoresA), requires_grad=False)
-            
+
 
             src_sents_len_A = [len(s) for s in src_sentsA]
             # print(src_sents_varA, src_sents_len_A, tgt_sents_varA[:-1], masksA)
             scoresA, feature_A, att_sim_A = models['A'](src_sents_varA, src_sents_len_A, tgt_sents_varA[:-1], masksA)
 
             ce_lossA = cross_entropy_loss['A'](scoresA.view(-1, scoresA.size(2)), tgt_sents_varA[1:].view(-1)).cpu()
-            
+
             batch_data = (src_sentsA, tgt_sentsA, src_scoresA, src_scoresB)
             src_sentsA, tgt_sentsA, src_scoresA, src_scoresB = get_new_batch(batch_data)
             tgt_sents_forB = [['<s>'] + sent + ['</s>'] for sent in src_sentsA]
@@ -143,7 +148,7 @@ def dual(args):
             src_sents_varB, masksB = to_input_variable(tgt_sentsA, vocabs['B'].src, cuda=args.cuda)
             tgt_sents_varB, _ = to_input_variable(tgt_sents_forB, vocabs['B'].tgt, cuda=args.cuda)
             src_scores_varB = Variable(torch.FloatTensor(src_scoresB), requires_grad=False)
-            
+
             src_sents_len = [len(s) for s in tgt_sentsA]
             scoresB, feature_B, att_sim_B = models['B'](src_sents_varB, src_sents_len, tgt_sents_varB[:-1], masksB)
 
@@ -157,7 +162,7 @@ def dual(args):
             # print (ce_lossA.size(), src_scores_varA.size(), tgt_sents_varA[1:].size(0))
             ce_lossA = ce_lossA.view(tgt_sents_varA[1:].size(0), tgt_sents_varA[1:].size(1)).mean(0)
             ce_lossB = ce_lossB.view(tgt_sents_varB[1:].size(0), tgt_sents_varB[1:].size(1)).mean(0)
-            
+
             att_sim_A = torch.cat(att_sim_A, 1)
 
             masksA = masksA.transpose(1,0).unsqueeze(1)
@@ -168,7 +173,7 @@ def dual(args):
             masksB = masksB.expand(masksB.size(0), att_sim_B.size(1), masksB.size(2))
             assert att_sim_B.size() == masksB.size(), '{} {}'.format(att_sim_B.size(), masksB.size())
             att_sim_B = att_sim_B.transpose(2, 1)
-            loss_att_A = loss_att(att_sim_A, att_sim_B, masksB.transpose(1,0), src_sents_len)
+            loss_att_A = loss_att(att_sim_A, att_sim_B, masksB.transpose(2,1), src_sents_len)
             loss_att_B = loss_att(att_sim_A.transpose(2, 1), att_sim_B.transpose(2, 1), masksB, src_sents_len_A)
 
             dual_loss = (src_scores_varA - ce_lossA - src_scores_varB + ce_lossB) ** 2
@@ -179,13 +184,13 @@ def dual(args):
 
             lossA = torch.mean(lossA)
             lossB = torch.mean(lossB)
-            
-            cum_lossA += lossA.data[0]
-            cum_lossB += lossB.data[0]
 
-            ce_lossA_log += torch.mean(ce_lossA).data[0]
-            ce_lossB_log += torch.mean(ce_lossB).data[0]
-            att_loss += (torch.mean(loss_att_A).data[0] + torch.mean(loss_att_B).data[0])
+            cum_lossA += lossA.item()
+            cum_lossB += lossB.item()
+
+            ce_lossA_log += torch.mean(ce_lossA).item()
+            ce_lossB_log += torch.mean(ce_lossB).item()
+            att_loss += (torch.mean(loss_att_A).item() + torch.mean(loss_att_B).item())
 
             optimizerA.zero_grad()
             lossA.backward(retain_graph=True)
@@ -196,7 +201,7 @@ def dual(args):
             grad_normB = torch.nn.utils.clip_grad_norm(models['B'].parameters(), args.clip_grad)
             optimizerB.step()
             if t % args.log_n_iter == 0 and t != 0:
-                print('epoch %d, avg. loss A %.3f, avg. word loss A %.3f, avg, loss B %.3f, avg. word loss B %.3f, avg att loss %.3f' % (epoch, 
+                print('epoch %d, avg. loss A %.3f, avg. word loss A %.3f, avg, loss B %.3f, avg. word loss B %.3f, avg att loss %.3f' % (epoch,
                         cum_lossA/args.log_n_iter , ce_lossA_log/args.log_n_iter, cum_lossB / args.log_n_iter, ce_lossB_log/args.log_n_iter,att_loss / args.log_n_iter))
                 cum_lossA = 0
                 cum_lossB = 0
@@ -215,7 +220,7 @@ def dual(args):
                     models[model_id].train()
                     hist_scores = hist_valid_scores[model_id]
                     print ('Model_id {} Sentence bleu : {}'.format(model_id, valid_metric))
-                    
+
                     is_better = len(hist_scores) == 0 or valid_metric > max(hist_scores)
                     hist_scores.append(valid_metric)
 
@@ -240,7 +245,7 @@ def dual(args):
                                 print('Decay learning rate to %f' % lr)
                                 optimizers[model_id].param_groups[0]['lr'] = lr
                                 decay[model_id] += 1
-                            
+
                     else:
                         patience[model_id] = 0
                         if model_id == 'A':

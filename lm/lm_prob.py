@@ -5,12 +5,13 @@ import torch
 import pickle
 import numpy as np
 from torch.autograd import Variable
-
-
+# from .model import RNNModel
+# import model
 class LMProb():
 
     def __init__(self, model_path, dict_path):
         with open(model_path, 'rb') as f:
+            # self.model = RNNModel()
             self.model = torch.load(f, map_location={'cuda:0': 'cpu'})
             self.model.eval()
             self.model = self.model.cpu()

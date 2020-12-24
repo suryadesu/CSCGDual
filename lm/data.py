@@ -38,7 +38,7 @@ class Corpus(object):
         self.valid = self.tokenize(os.path.join(path, 'valid.token.code'))
         self.test = self.tokenize(os.path.join(path, 'test.token.code'))
 
-        with open(os.path.join(path, 'dict_code.pkl'), 'wb') as f:
+        with open(os.path.join(path, 'dict_nl_code.pkl'), 'wb') as f:
             pickle.dump(self.dictionary, f)
         print (len(self.dictionary))
     def tokenize(self, path):
