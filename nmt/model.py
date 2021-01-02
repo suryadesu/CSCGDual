@@ -115,7 +115,7 @@ class NMT(nn.Module):
         src_encoding_att_linear = tensor_transform(self.att_src_linear, src_encoding)
         # initialize attentional vector
         att_tm1 = Variable(new_tensor(batch_size, self.args.hidden_size).zero_(), requires_grad=False)
-        # tgt_sents = tgt_sents.cpu() 
+        # tgt_sents = tgt_sents.cpu()
         tgt_word_embed = self.tgt_embed(tgt_sents)
         # tgt_word_embed = tgt_word_embed.cuda()
         scores = []
@@ -251,7 +251,13 @@ class NMT(nn.Module):
 
         if to_word:
             for i, hyp in enumerate(completed_hypotheses):
-                completed_hypotheses[i] = [self.vocab.tgt.id2word[w] for w in hyp]
+                temp = []
+                for w in hyp:
+                    if isinstance(w,int):
+                        temp.append(self.vocab.tgt.id2word[w])
+                    else:
+                        temp.append(self.vocab.tgt.id2word[w.item()])
+                completed_hypotheses[i] = temp
 
         ranked_hypotheses = sorted(zip(completed_hypotheses, completed_hypothesis_scores), key=lambda x: x[1], reverse=True)
 
@@ -391,7 +397,7 @@ class NMT(nn.Module):
 
             expanded_src_encoding = src_encoding.expand(src_encoding.size(0), hyp_num, src_encoding.size(2))
             expanded_src_encoding_att_linear = src_encoding_att_linear.expand(src_encoding_att_linear.size(0), hyp_num, src_encoding_att_linear.size(2))
-            
+
             y_tm1 = Variable(torch.LongTensor([hyp[-1] for hyp in hypotheses]), requires_grad=False)
             if self.args.cuda:
                 y_tm1 = y_tm1.cuda(cuda_id)
@@ -466,7 +472,7 @@ class NMT(nn.Module):
 
             out_dists = new_out_dists
             hypotheses = new_hypotheses
-            
+
 
         if len(new_hypotheses) > 0:
             for hyp, dist, score in zip(new_hypotheses, new_out_dists, new_hyp_scores):
@@ -518,7 +524,7 @@ class NMT(nn.Module):
         # if mask:
         # print (att_weight.size(), mask.size())
         att_weight.data.masked_fill_(mask.transpose(1, 0), -1e-8)
-        
+
         att_sim_mat = att_weight.view((att_weight.size(0), 1, att_weight.size(1)))
         att_weight = F.softmax(att_weight)
 

@@ -3,7 +3,7 @@
 L1='code'
 L2='nl'
 JOB='pretrain'
-lang='java'
+lang='csharp'
 data_dir="data/${lang}"
 vocab_bin="$data_dir/vocab.${L1}.${L2}.bin"
 train_src="$data_dir/train.token.${L1}"
@@ -14,7 +14,7 @@ test_tgt="$data_dir/valid.token.${L2}"
 job_name="$JOB"
 model_name="pretrain_models/${lang}/c2nl.${job_name}"
 
-python2 nmt/nmt.py \
+python2 nmt/mynmt.py \
     --mode train \
     --vocab ${vocab_bin} \
     --save_to ${model_name} \
@@ -36,6 +36,6 @@ python2 nmt/nmt.py \
     --train_tgt ${train_tgt} \
     --dev_src ${test_src} \
     --dev_tgt ${test_tgt} \
-    --gpu "0" \
+    --gpu "0,1" \
     --cuda
 

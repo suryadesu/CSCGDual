@@ -32,13 +32,13 @@ class Dictionary(object):
 
 
 class Corpus(object):
-    def __init__(self, path):
+    def __init__(self, path,selection):
         self.dictionary = Dictionary()
-        self.train = self.tokenize(os.path.join(path, 'train.token.code'))
-        self.valid = self.tokenize(os.path.join(path, 'valid.token.code'))
-        self.test = self.tokenize(os.path.join(path, 'test.token.code'))
+        self.train = self.tokenize(os.path.join(path, 'train.token.'+selection))
+        self.valid = self.tokenize(os.path.join(path, 'valid.token.'+selection))
+        self.test = self.tokenize(os.path.join(path, 'test.token.'+selection))
 
-        with open(os.path.join(path, 'dict_nl_code.pkl'), 'wb') as f:
+        with open(os.path.join(path, 'dict_'+selection+'.pkl'), 'wb') as f:
             pickle.dump(self.dictionary, f)
         print (len(self.dictionary))
     def tokenize(self, path):

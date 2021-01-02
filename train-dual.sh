@@ -1,7 +1,7 @@
 #!/bin/bash
 
 nmtdir=pretrain_models/java/
-srcdir=data/java-small/
+srcdir=data/java/
 
 nmtA=$nmtdir/c2nl.bin
 nmtB=$nmtdir/nl2c.bin
@@ -10,8 +10,8 @@ srcB=$srcdir/train.token.nl
 valA=$srcdir/valid.token.code
 valB=$srcdir/valid.token.nl
 
-saveA="dual_models/c2nl"
-saveB="dual_models/nl2c"
+saveA="dual_models/java/c2nl"
+saveB="dual_models/java/nl2c"
 python dsl_dual.py \
     --nmt $nmtA $nmtB \
     --src $srcA $srcB \

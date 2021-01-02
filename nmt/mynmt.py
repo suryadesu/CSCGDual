@@ -509,7 +509,7 @@ def to_input_variable(sents, vocab, cuda=False,device='cpu', is_test=False):
     """
     word_ids = word2id(sents, vocab)
     sents_t, masks = input_transpose(word_ids, vocab['<pad>'])
-    print(sent_t.shape == masks.shape)
+    # print(sent_t.shape == masks.shape)
     sents_var = torch.LongTensor(sents_t)
     if cuda:
         sents_var = sents_var.to(device)
@@ -892,9 +892,9 @@ def test(args):
     model.eval()
 
     if args.cuda:
-        model = model.to(gpu0)
+        model = model.to('cuda:'+args.gpu)
 
-    hypotheses = decode(model, test_data, verbose=False)
+    hypotheses = decode(args,model, test_data, verbose=False)
     top_hypotheses = [hyps[0] for hyps in hypotheses]
 
     bleu_score = get_bleu([tgt for src, tgt in test_data], top_hypotheses, 'test')

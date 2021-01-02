@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.utils
-from torch.autograd import Variable
+# from torch.autograd import Variable
 from torch import optim
 from torch.nn import Parameter
 import torch.nn.functional as F
@@ -23,6 +23,10 @@ from nltk.translate.bleu_score import corpus_bleu, sentence_bleu, SmoothingFunct
 from util import read_corpus, data_iter
 from vocab import Vocab, VocabEntry
 import sys
+
+gpu0 = 'cuda:0'
+gpu1 = 'cuda:1'
+
 def init_config():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', default=5783287, type=int, help='random seed')
@@ -65,7 +69,7 @@ def init_config():
 
     # raml training
     parser.add_argument('--debug', default=False, action='store_true')
-    parser.add_argument('--gpu', default=5, type=int)
+    parser.add_argument('--gpu', default="0", type=str)
     parser.add_argument('--temp', default=0.85, type=float, help='temperature in reward distribution')
     parser.add_argument('--raml_sample_mode', default='pre_sample',
                         choices=['pre_sample', 'hamming_distance', 'hamming_distance_impt_sample'],
@@ -125,7 +129,7 @@ class NMT(nn.Module):
         self.vocab = vocab
 
         self.src_embed = nn.Embedding(len(vocab.src), args.embed_size, padding_idx=vocab.src['<pad>'])
-        self.tgt_embed = nn.Embedding(len(vocab.tgt), args.embed_size, padding_idx=vocab.tgt['<pad>'])
+        self.tgt_embed = nn.Embedding(len(vocab.tgt), args.embed_size, padding_idx=vocab.tgt['<pad>']).to(gpu1)
         # self.pos_embed = nn.Embedding(101, 50, padding_idx=vocab.tgt['<pad>'])
 
         self.encoder_lstm = nn.LSTM(args.embed_size, args.hidden_size, bidirectional=True, dropout=args.dropout)
@@ -162,16 +166,16 @@ class NMT(nn.Module):
         # (src_sent_len, batch_size, embed_size)
         src_word_embed = self.src_embed(src_sents)
         # if args.cuda:
-        #     src_word_embed = src_word_embed.cuda()
+        #     src_word_embed = src_word_embed.to(gpu0)
         packed_src_embed = pack_padded_sequence(src_word_embed, src_sents_len)
-        
+
 
         # output: (src_sent_len, batch_size, hidden_size)
         output, (last_state, last_cell) = self.encoder_lstm(packed_src_embed)
         output, _ = pad_packed_sequence(output)
 
         dec_init_cell = self.decoder_cell_init(torch.cat([last_cell[0], last_cell[1]], 1))
-        dec_init_state = F.tanh(dec_init_cell)
+        dec_init_state = torch.tanh(dec_init_cell)
 
         return output, (dec_init_state, dec_init_cell)
 
@@ -185,7 +189,6 @@ class NMT(nn.Module):
         init_state = dec_init_vec[0]
         init_cell = dec_init_vec[1]
         hidden = (init_state, init_cell)
-
         new_tensor = init_cell.data.new
         batch_size = src_encoding.size(1)
 
@@ -194,11 +197,11 @@ class NMT(nn.Module):
         # (batch_size, src_sent_len, hidden_size)
         src_encoding_att_linear = tensor_transform(self.att_src_linear, src_encoding)
         # initialize attentional vector
-        att_tm1 = Variable(new_tensor(batch_size, self.args.hidden_size).zero_(), requires_grad=False)
-
+        att_tm1 = new_tensor(batch_size, self.args.hidden_size).zero_()
+        # print(self.tgt_embed.device,tgt_sents.device)
         tgt_word_embed = self.tgt_embed(tgt_sents)
         # if args.cuda:
-        #     tgt_word_embed = tgt_word_embed.cuda()
+        #     tgt_word_embed = tgt_word_embed.to(gpu0)
         scores = []
         att_sim_mats = []
 
@@ -206,27 +209,25 @@ class NMT(nn.Module):
         t = 0
         for y_tm1_embed in tgt_word_embed.split(split_size=1):
             # input feeding: concate y_tm1 and previous attentional vector
-            # ttt = Variable(torch.LongTensor([t for i in range(batch_size)])).cuda()
+            # ttt = Variable(torch.LongTensor([t for i in range(batch_size)])).to(gpu0)
             x = torch.cat([y_tm1_embed.squeeze(0), att_tm1,], 1)
 
             # h_t: (batch_size, hidden_size)
             h_t, cell_t = self.decoder_lstm(x, hidden)
             # h_t = self.dropout(h_t)
-
             ctx_t, alpha_t, att_sim_mat  = self.dot_prod_attention(h_t, src_encoding, src_encoding_att_linear)
 
-            att_t = F.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))   # E.q. (5)
+            att_t = torch.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))   # E.q. (5)
             att_t = self.dropout(att_t)
-
+            
             score_t = self.readout(att_t)   # E.q. (6)
             scores.append(score_t)
             att_sim_mats.append(att_sim_mat)
-
             att_tm1 = att_t
             hidden = h_t, cell_t
+            del x,att_t,ctx_t,alpha_t,h_t,cell_t,att_sim_mat
             t += 1
-
-        scores = torch.stack(scores)
+        scores = torch.stack(scores).to(gpu1)
         return scores, att_sim_mats
 
     def translate(self, src_sents, beam_size=None, to_word=True):
@@ -250,94 +251,101 @@ class NMT(nn.Module):
         init_state = dec_init_vec[0]
         init_cell = dec_init_vec[1]
         hidden = (init_state, init_cell)
-
-        att_tm1 = Variable(torch.zeros(1, self.args.hidden_size), volatile=True)
-        hyp_scores = Variable(torch.zeros(1), volatile=True)
-        if args.cuda:
-            att_tm1 = att_tm1.cuda()
-            hyp_scores = hyp_scores.cuda()
-
-        eos_id = self.vocab.tgt['</s>']
-        bos_id = self.vocab.tgt['<s>']
-        tgt_vocab_size = len(self.vocab.tgt)
-
-        hypotheses = [[bos_id]]
-        completed_hypotheses = []
-        completed_hypothesis_scores = []
-
-        t = 0
-        while len(completed_hypotheses) < beam_size and t < args.decode_max_time_step:
-            t += 1
-            hyp_num = len(hypotheses)
-
-            expanded_src_encoding = src_encoding.expand(src_encoding.size(0), hyp_num, src_encoding.size(2))
-            expanded_src_encoding_att_linear = src_encoding_att_linear.expand(src_encoding_att_linear.size(0), hyp_num, src_encoding_att_linear.size(2))
-
-            y_tm1 = Variable(torch.LongTensor([hyp[-1] for hyp in hypotheses]), volatile=True)
+        with torch.no_grad():
+            att_tm1 = torch.zeros(1, self.args.hidden_size)
+            hyp_scores = torch.zeros(1)
             if args.cuda:
-                y_tm1 = y_tm1.cuda()
+                att_tm1 = att_tm1.to(gpu1)
+                hyp_scores = hyp_scores.to(gpu1)
 
-            y_tm1_embed = self.tgt_embed(y_tm1)
+            eos_id = self.vocab.tgt['</s>']
+            bos_id = self.vocab.tgt['<s>']
+            tgt_vocab_size = len(self.vocab.tgt)
 
-            x = torch.cat([y_tm1_embed, att_tm1], 1)
+            hypotheses = [[bos_id]]
+            completed_hypotheses = []
+            completed_hypothesis_scores = []
 
-            # h_t: (hyp_num, hidden_size)
-            h_t, cell_t = self.decoder_lstm(x, hidden)
-            # h_t = self.dropout(h_t)
+            t = 0
+            while len(completed_hypotheses) < beam_size and t < args.decode_max_time_step:
+                t += 1
+                hyp_num = len(hypotheses)
 
-            ctx_t, alpha_t, _ = self.dot_prod_attention(h_t, expanded_src_encoding.permute(1, 0, 2), expanded_src_encoding_att_linear.permute(1, 0, 2))
+                expanded_src_encoding = src_encoding.expand(src_encoding.size(0), hyp_num, src_encoding.size(2))
+                expanded_src_encoding_att_linear = src_encoding_att_linear.expand(src_encoding_att_linear.size(0), hyp_num, src_encoding_att_linear.size(2))
 
-            att_t = F.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))
-            att_t = self.dropout(att_t)
+                y_tm1 = torch.LongTensor([hyp[-1] for hyp in hypotheses])
+                if args.cuda:
+                    y_tm1 = y_tm1.to(gpu0)
+                # print(y_tm1.device)
+                y_tm1_embed = self.tgt_embed(y_tm1)
 
-            score_t = self.readout(att_t)
-            p_t = F.log_softmax(score_t)
+                x = torch.cat([y_tm1_embed, att_tm1], 1)
 
-            live_hyp_num = beam_size - len(completed_hypotheses)
-            new_hyp_scores = (hyp_scores.unsqueeze(1).expand_as(p_t) + p_t).view(-1)
-            top_new_hyp_scores, top_new_hyp_pos = torch.topk(new_hyp_scores, k=live_hyp_num)
-            prev_hyp_ids = top_new_hyp_pos / tgt_vocab_size
-            word_ids = top_new_hyp_pos % tgt_vocab_size
-            # new_hyp_scores = new_hyp_scores[top_new_hyp_pos.data]
+                # h_t: (hyp_num, hidden_size)
+                h_t, cell_t = self.decoder_lstm(x, hidden)
+                # h_t = self.dropout(h_t)
 
-            new_hypotheses = []
+                ctx_t, alpha_t, _ = self.dot_prod_attention(h_t, expanded_src_encoding.permute(1, 0, 2), expanded_src_encoding_att_linear.permute(1, 0, 2))
 
-            live_hyp_ids = []
-            new_hyp_scores = []
-            for prev_hyp_id, word_id, new_hyp_score in zip(prev_hyp_ids.cpu().data, word_ids.cpu().data, top_new_hyp_scores.cpu().data):
-                hyp_tgt_words = hypotheses[prev_hyp_id] + [word_id]
-                if word_id == eos_id:
-                    completed_hypotheses.append(hyp_tgt_words)
-                    completed_hypothesis_scores.append(new_hyp_score)
-                else:
-                    new_hypotheses.append(hyp_tgt_words)
-                    live_hyp_ids.append(prev_hyp_id)
-                    new_hyp_scores.append(new_hyp_score)
+                att_t = torch.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))
+                att_t = self.dropout(att_t)
 
-            if len(completed_hypotheses) == beam_size:
-                break
+                score_t = self.readout(att_t)
+                p_t = F.log_softmax(score_t)
+                hyp_scores = hyp_scores.to(gpu0)
+                live_hyp_num = beam_size - len(completed_hypotheses)
+                new_hyp_scores = (hyp_scores.unsqueeze(1).expand_as(p_t) + p_t).view(-1)
+                top_new_hyp_scores, top_new_hyp_pos = torch.topk(new_hyp_scores, k=live_hyp_num)
+                prev_hyp_ids = top_new_hyp_pos / tgt_vocab_size
+                word_ids = top_new_hyp_pos % tgt_vocab_size
+                # new_hyp_scores = new_hyp_scores[top_new_hyp_pos.data]
 
-            live_hyp_ids = torch.LongTensor(live_hyp_ids)
-            if args.cuda:
-                live_hyp_ids = live_hyp_ids.cuda()
+                new_hypotheses = []
 
-            hidden = (h_t[live_hyp_ids], cell_t[live_hyp_ids])
-            att_tm1 = att_t[live_hyp_ids]
+                live_hyp_ids = []
+                new_hyp_scores = []
+                for prev_hyp_id, word_id, new_hyp_score in zip(prev_hyp_ids.cpu().data, word_ids.cpu().data, top_new_hyp_scores.cpu().data):
+                    hyp_tgt_words = hypotheses[prev_hyp_id] + [word_id]
+                    if word_id == eos_id:
+                        completed_hypotheses.append(hyp_tgt_words)
+                        completed_hypothesis_scores.append(new_hyp_score)
+                    else:
+                        new_hypotheses.append(hyp_tgt_words)
+                        live_hyp_ids.append(prev_hyp_id)
+                        new_hyp_scores.append(new_hyp_score)
 
-            hyp_scores = Variable(torch.FloatTensor(new_hyp_scores), volatile=True) # new_hyp_scores[live_hyp_ids]
-            if args.cuda:
-                hyp_scores = hyp_scores.cuda()
-            hypotheses = new_hypotheses
+                if len(completed_hypotheses) == beam_size:
+                    break
 
-        if len(completed_hypotheses) == 0:
-            completed_hypotheses = [hypotheses[0]]
-            completed_hypothesis_scores = [0.0]
+                live_hyp_ids = torch.LongTensor(live_hyp_ids)
+                if args.cuda:
+                    live_hyp_ids = live_hyp_ids.to(gpu0)
 
-        if to_word:
-            for i, hyp in enumerate(completed_hypotheses):
-                completed_hypotheses[i] = [self.vocab.tgt.id2word[w] for w in hyp]
+                hidden = (h_t[live_hyp_ids], cell_t[live_hyp_ids])
+                att_tm1 = att_t[live_hyp_ids]
 
-        ranked_hypotheses = sorted(zip(completed_hypotheses, completed_hypothesis_scores), key=lambda x: x[1], reverse=True)
+                hyp_scores = torch.FloatTensor(new_hyp_scores) # new_hyp_scores[live_hyp_ids]
+                if args.cuda:
+                    hyp_scores = hyp_scores.to(gpu0)
+                hypotheses = new_hypotheses
+
+            if len(completed_hypotheses) == 0:
+                completed_hypotheses = [hypotheses[0]]
+                completed_hypothesis_scores = [0.0]
+
+            if to_word:
+                for i, hyp in enumerate(completed_hypotheses):
+                    temp = []
+                    for w in hyp:
+                        if isinstance(w,int):
+                            temp.append(w)
+                        else:
+                            temp.append(w.item())
+                    # completed_hypotheses[i] = [self.vocab.tgt.id2word[w] for w in hyp]
+                    completed_hypotheses[i] = temp
+
+            ranked_hypotheses = sorted(zip(completed_hypotheses, completed_hypothesis_scores), key=lambda x: x[1], reverse=True)
 
         return [hyp for hyp, score in ranked_hypotheses]
 
@@ -362,80 +370,81 @@ class NMT(nn.Module):
         src_encoding_att_linear = src_encoding_att_linear.permute(1, 0, 2)
 
         new_tensor = dec_init_state.data.new
-        att_tm1 = Variable(new_tensor(batch_size, self.args.hidden_size).zero_(), volatile=True)
-        y_0 = Variable(torch.LongTensor([self.vocab.tgt['<s>'] for _ in range(batch_size)]), volatile=True)
+        with torch.no_grad():
+            att_tm1 = new_tensor(batch_size, self.args.hidden_size).zero_()
+            y_0 = torch.LongTensor([self.vocab.tgt['<s>'] for _ in range(batch_size)])
 
-        eos = self.vocab.tgt['</s>']
-        # eos_batch = torch.LongTensor([eos] * batch_size)
-        sample_ends = torch.ByteTensor([0] * batch_size)
-        all_ones = torch.ByteTensor([1] * batch_size)
-        if args.cuda:
-            y_0 = y_0.cuda()
-            sample_ends = sample_ends.cuda()
-            all_ones = all_ones.cuda()
+            eos = self.vocab.tgt['</s>']
+            # eos_batch = torch.LongTensor([eos] * batch_size)
+            sample_ends = torch.ByteTensor([0] * batch_size)
+            all_ones = torch.ByteTensor([1] * batch_size)
+            if args.cuda:
+                y_0 = y_0.to(gpu0)
+                sample_ends = sample_ends.to(gpu0)
+                all_ones = all_ones.to(gpu0)
 
-        samples = [y_0]
+            samples = [y_0]
 
-        t = 0
-        while t < args.decode_max_time_step:
-            t += 1
+            t = 0
+            while t < args.decode_max_time_step:
+                t += 1
 
-            # (sample_size)
-            y_tm1 = samples[-1]
+                # (sample_size)
+                y_tm1 = samples[-1]
 
-            y_tm1_embed = self.tgt_embed(y_tm1)
+                y_tm1_embed = self.tgt_embed(y_tm1)
 
-            x = torch.cat([y_tm1_embed, att_tm1], 1)
+                x = torch.cat([y_tm1_embed, att_tm1], 1)
 
-            # h_t: (batch_size, hidden_size)
-            h_t, cell_t = self.decoder_lstm(x, hidden)
-            h_t = self.dropout(h_t)
+                # h_t: (batch_size, hidden_size)
+                h_t, cell_t = self.decoder_lstm(x, hidden)
+                h_t = self.dropout(h_t)
 
-            ctx_t, alpha_t = self.dot_prod_attention(h_t, src_encoding, src_encoding_att_linear)
+                ctx_t, alpha_t = self.dot_prod_attention(h_t, src_encoding, src_encoding_att_linear)
 
-            att_t = F.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))  # E.q. (5)
-            att_t = self.dropout(att_t)
+                att_t = torch.tanh(self.att_vec_linear(torch.cat([h_t, ctx_t], 1)))  # E.q. (5)
+                att_t = self.dropout(att_t)
 
-            score_t = self.readout(att_t)  # E.q. (6)
-            p_t = F.softmax(score_t)
+                score_t = self.readout(att_t)  # E.q. (6)
+                p_t = F.softmax(score_t)
 
-            if args.sample_method == 'random':
-                y_t = torch.multinomial(p_t, num_samples=1).squeeze(1)
-            elif args.sample_method == 'greedy':
-                _, y_t = torch.topk(p_t, k=1, dim=1)
-                y_t = y_t.squeeze(1)
+                if args.sample_method == 'random':
+                    y_t = torch.multinomial(p_t, num_samples=1).squeeze(1)
+                elif args.sample_method == 'greedy':
+                    _, y_t = torch.topk(p_t, k=1, dim=1)
+                    y_t = y_t.squeeze(1)
 
-            samples.append(y_t)
+                samples.append(y_t)
 
-            sample_ends |= torch.eq(y_t, eos).byte().data
-            if torch.equal(sample_ends, all_ones):
-                break
+                sample_ends |= torch.eq(y_t, eos).byte().data
+                if torch.equal(sample_ends, all_ones):
+                    break
 
-            # if torch.equal(y_t.data, eos_batch):
-            #     break
+                # if torch.equal(y_t.data, eos_batch):
+                #     break
 
-            att_tm1 = att_t
-            hidden = h_t, cell_t
+                att_tm1 = att_t
+                hidden = h_t, cell_t
 
-        # post-processing
-        completed_samples = [list([list() for _ in range(sample_size)]) for _ in range(src_sents_num)]
-        for y_t in samples:
-            for i, sampled_word in enumerate(y_t.cpu().data):
-                src_sent_id = i % src_sents_num
-                sample_id = i / src_sents_num
-                if len(completed_samples[src_sent_id][sample_id]) == 0 or completed_samples[src_sent_id][sample_id][-1] != eos:
-                    completed_samples[src_sent_id][sample_id].append(sampled_word)
+            # post-processing
+            completed_samples = [list([list() for _ in range(sample_size)]) for _ in range(src_sents_num)]
+            for y_t in samples:
+                for i, sampled_word in enumerate(y_t.cpu().data):
+                    src_sent_id = i % src_sents_num
+                    sample_id = i / src_sents_num
+                    if len(completed_samples[src_sent_id][sample_id]) == 0 or completed_samples[src_sent_id][sample_id][-1] != eos:
+                        completed_samples[src_sent_id][sample_id].append(sampled_word)
 
-        if to_word:
-            for i, src_sent_samples in enumerate(completed_samples):
-                completed_samples[i] = word2id(src_sent_samples, self.vocab.tgt.id2word)
+            if to_word:
+                for i, src_sent_samples in enumerate(completed_samples):
+                    completed_samples[i] = word2id(src_sent_samples, self.vocab.tgt.id2word)
 
         return completed_samples
 
     def attention(self, h_t, src_encoding, src_linear_for_att):
         # (1, batch_size, attention_size) + (src_sent_len, batch_size, attention_size) =>
         # (src_sent_len, batch_size, attention_size)
-        att_hidden = F.tanh(self.att_h_linear(h_t).unsqueeze(0).expand_as(src_linear_for_att) + src_linear_for_att)
+        att_hidden = torch.tanh(self.att_h_linear(h_t).unsqueeze(0).expand_as(src_linear_for_att) + src_linear_for_att)
 
         # (batch_size, src_sent_len)
         att_weights = F.softmax(tensor_transform(self.att_vec_linear, att_hidden).squeeze(2).permute(1, 0))
@@ -483,9 +492,9 @@ def to_input_variable(sents, vocab, cuda=False, is_test=False):
     word_ids = word2id(sents, vocab)
     sents_t, masks = input_transpose(word_ids, vocab['<pad>'])
 
-    sents_var = Variable(torch.LongTensor(sents_t), volatile=is_test, requires_grad=False)
+    sents_var = torch.LongTensor(sents_t)
     if cuda:
-        sents_var = sents_var.cuda()
+        sents_var = sents_var.to(gpu0)
 
     return sents_var
 
@@ -505,10 +514,12 @@ def evaluate_loss(model, data, crit):
 
         # (tgt_sent_len, batch_size, tgt_vocab_size)
         scores, _ = model(src_sents_var, src_sents_len, tgt_sents_var[:-1])
+        tgt_sents_var = tgt_sents_var.to(gpu1)
         loss = crit(scores.view(-1, scores.size(2)), tgt_sents_var[1:].view(-1))
 
-        cum_loss += loss.data[0]
+        cum_loss += loss.item()
         cum_tgt_words += pred_tgt_word_num
+        del pred_tgt_word_num,src_sents_len,src_sents_var,tgt_sents_var,scores,loss
 
     cum_tgt_words = 1. if cum_tgt_words < 1. else cum_tgt_words
     loss = cum_loss / cum_tgt_words
@@ -541,11 +552,11 @@ def init_training(args):
     cross_entropy_loss = nn.CrossEntropyLoss(weight=vocab_mask, size_average=False)
 
     if args.cuda:
-        model = model.cuda()
+        model = model.to(gpu0)
         # model.src_embed = model.src_embed.cpu()
         # model.tgt_embed = model.tgt_embed.cpu()
-        nll_loss = nll_loss.cuda()
-        cross_entropy_loss = cross_entropy_loss.cuda()
+        nll_loss = nll_loss.to(gpu1)
+        cross_entropy_loss = cross_entropy_loss.to(gpu1)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
@@ -600,16 +611,18 @@ def train(args):
 
             # (tgt_sent_len, batch_size, tgt_vocab_size)
             scores, _ = model(src_sents_var, src_sents_len, tgt_sents_var[:-1])
-            # if args.cuda:
-            #     tgt_sents_var = tgt_sents_var.cuda()
+            # print(scores)
+            if args.cuda:
+                tgt_sents_var = tgt_sents_var.to(gpu1)
             word_loss = cross_entropy_loss(scores.view(-1, scores.size(2)), tgt_sents_var[1:].view(-1))
-            loss = word_loss / batch_size
-            word_loss_val = word_loss.data[0]
-            loss_val = loss.data[0]
-
+            loss = (word_loss / batch_size).to(gpu0)
+            word_loss_val = word_loss.item()
+            loss_val = loss.item()
+            del scores,word_loss
+            # print(loss.device)
             loss.backward()
             # clip gradient
-            grad_norm = torch.nn.utils.clip_grad_norm(model.parameters(), args.clip_grad)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
 
             report_loss += word_loss_val
@@ -619,7 +632,9 @@ def train(args):
             report_examples += batch_size
             cum_examples += batch_size
             cum_batches += batch_size
-
+            del loss
+            if train_iter % 100 == 0:
+                print(train_iter,'batches done')
             if train_iter % args.log_every == 0:
                 print('epoch %d, iter %d, avg. loss %.2f, avg. ppl %.2f ' \
                       'cum. examples %d, speed %.2f words/sec, time elapsed %.2f sec' % (epoch, train_iter,
@@ -786,7 +801,7 @@ def compute_lm_prob(args):
     model.eval()
 
     if args.cuda:
-        model = model.cuda()
+        model = model.to(gpu0)
 
     f = open(args.save_to_file, 'w')
     for src_sent, tgt_sent in test_data:
@@ -816,7 +831,7 @@ def compute_lm_prob(args):
         tgt_log_scores = tgt_log_scores.view(-1, batch_size) # .permute(1, 0)
         # (batch_size)
         tgt_sent_scores = tgt_log_scores.sum(dim=0).squeeze()
-        tgt_sent_word_scores = [tgt_sent_scores[i].data[0] / pred_tgt_word_nums[i] for i in range(batch_size)]
+        tgt_sent_word_scores = [tgt_sent_scores[i].item() / pred_tgt_word_nums[i] for i in range(batch_size)]
 
         for src_sent, tgt_sent, score in zip(src_sents, tgt_sents, tgt_sent_word_scores):
             f.write('%s ||| %s ||| %f\n' % (' '.join(src_sent), ' '.join(tgt_sent), score))
@@ -843,12 +858,12 @@ def test(args):
     else:
         vocab = torch.load(args.vocab)
         model = NMT(args, vocab)
-    
+
 
     model.eval()
 
     if args.cuda:
-        model = model.cuda()
+        model = model.to(gpu0)
 
     hypotheses = decode(model, test_data, verbose=False)
     top_hypotheses = [hyps[0] for hyps in hypotheses]
@@ -894,7 +909,7 @@ def interactive(args):
     model.eval()
 
     if args.cuda:
-        model = model.cuda()
+        model = model.to(gpu0)
 
 
 def sample(args):
@@ -918,7 +933,7 @@ def sample(args):
     model.eval()
 
     if args.cuda:
-        model = model.cuda()
+        model = model.to(gpu0)
 
     print('begin sampling')
 
